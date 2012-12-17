@@ -397,7 +397,6 @@ class DropboxClient
     # The file will not overwrite any pre-existing file.
     def put_file(to_path, file_obj, overwrite=false, parent_rev=nil)
         path = "/files_put/#{@root}#{format_path(to_path)}"
-
         params = {
             'overwrite' => overwrite.to_s,
             'mute'      => "1"
@@ -408,7 +407,7 @@ class DropboxClient
         response = @session.do_put(build_url(path, params, content_server=true),
                                    {"Content-Type" => "application/octet-stream"},
                                    file_obj)
-
+        puts "response=," response
         parse_response(response)
     end
 
