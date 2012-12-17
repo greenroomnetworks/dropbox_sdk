@@ -399,7 +399,8 @@ class DropboxClient
         path = "/files_put/#{@root}#{format_path(to_path)}"
 
         params = {
-            'overwrite' => overwrite.to_s
+            'overwrite' => overwrite.to_s,
+            'mute'      => "1"
         }
 
         params['parent_rev'] = parent_rev unless parent_rev.nil?
