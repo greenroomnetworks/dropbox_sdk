@@ -404,12 +404,10 @@ class DropboxClient
 
         params['parent_rev'] = parent_rev unless parent_rev.nil?
 
-        puts "params=", params
 
         response = @session.do_put(build_url(path, params, content_server=true),
                                    {"Content-Type" => "application/octet-stream"},
                                    file_obj)
-        puts "response=", response
         parse_response(response)
     end
 
