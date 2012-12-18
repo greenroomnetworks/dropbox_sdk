@@ -871,7 +871,7 @@ class DropboxClient
                 CGI.escape(k) + "=" + CGI.escape(v)
             }.join("&")
         end
-
+        puts "target=," target.to_s
         target.to_s
     end
 
