@@ -9,9 +9,9 @@ module Dropbox # :nodoc:
     API_SERVER = "api.dropbox.com"
     API_CONTENT_SERVER = "api-content.dropbox.com"
     WEB_SERVER = "www.dropbox.com"
-
+    
     API_VERSION = 1
-    SDK_VERSION = "1.3.1"
+    SDK_VERSION = "1.5.1"
 
     TRUSTED_CERT_FILE = File.join(File.dirname(__FILE__), 'trusted-certs.crt')
 end
@@ -32,7 +32,7 @@ class DropboxSession
 
     private
 
-    def do_http(uri, auth_token, request, output_file_path=nil) # :nodoc:
+    def do_http(uri, auth_token, request) # :nodoc:
         http = Net::HTTP.new(uri.host, uri.port)
 
         http.use_ssl = true
@@ -45,17 +45,7 @@ class DropboxSession
         request['User-Agent'] =  "OfficialDropboxRubySDK/#{Dropbox::SDK_VERSION}"
 
         begin
-          if output_file_path
-            File.open(output_file_path, 'wb') do |file|
-              http.request(request) do |response|
-                response.read_body do |segment|
-                  file.write(segment)
-                end
-              end
-            end
-          else
             http.request(request)
-          end
         rescue OpenSSL::SSL::SSLError => e
             raise DropboxError.new("SSL error connecting to Dropbox.  " +
                                    "There may be a problem with the set of certificates in \"#{Dropbox::TRUSTED_CERT_FILE}\".  " +
@@ -80,16 +70,16 @@ class DropboxSession
         header
     end
 
-    def do_get_with_token(url, token, headers=nil, output_file_path=nil) # :nodoc:
+    def do_get_with_token(url, token, headers=nil) # :nodoc:
         uri = URI.parse(url)
-        do_http(uri, token, Net::HTTP::Get.new(uri.request_uri), output_file_path)
+        do_http(uri, token, Net::HTTP::Get.new(uri.request_uri))
     end
 
     public
 
-    def do_get(url, headers=nil, output_file_path=nil)  # :nodoc:
+    def do_get(url, headers=nil)  # :nodoc:
         assert_authorized
-        do_get_with_token(url, @access_token, headers, output_file_path)
+        do_get_with_token(url, @access_token)
     end
 
     def do_http_with_body(uri, request, body)
@@ -397,18 +387,119 @@ class DropboxClient
     # The file will not overwrite any pre-existing file.
     def put_file(to_path, file_obj, overwrite=false, parent_rev=nil)
         path = "/files_put/#{@root}#{format_path(to_path)}"
+
         params = {
-            'overwrite' => overwrite.to_s,
-            'mute'      => "1"
+            'overwrite' => overwrite.to_s
         }
 
         params['parent_rev'] = parent_rev unless parent_rev.nil?
 
-
         response = @session.do_put(build_url(path, params, content_server=true),
                                    {"Content-Type" => "application/octet-stream"},
                                    file_obj)
+
         parse_response(response)
+    end
+
+    # Returns a ChunkedUploader object.
+    #
+    # Args:
+    # * file_obj: The file-like object to be uploaded.  Must support .read()
+    # * total_size: The total size of file_obj
+    def get_chunked_uploader(file_obj, total_size)
+        ChunkedUploader.new(self, file_obj, total_size)
+    end
+
+    # ChunkedUploader is responsible for uploading a large file to Dropbox in smaller chunks.
+    # This allows large files to be uploaded and makes allows recovery during failure.
+    class ChunkedUploader
+        attr_accessor :file_obj, :total_size, :offset, :upload_id, :client
+
+        def initialize(client, file_obj, total_size)
+            @client = client
+            @file_obj = file_obj
+            @total_size = total_size
+            @upload_id = nil
+            @offset = 0
+        end
+
+        # Uploads data from this ChunkedUploader's file_obj in chunks, until
+        # an error occurs. Throws an exception when an error occurs, and can
+        # be called again to resume the upload.
+        #
+        # Args:
+        # * chunk_size: The chunk size for each individual upload.  Defaults to 4MB.
+        def upload(chunk_size=4*1024*1024)
+            last_chunk = nil
+
+            while @offset < @total_size
+                if not last_chunk
+                    last_chunk = @file_obj.read(chunk_size)
+                end
+
+                resp = {}
+                begin
+                    resp = @client.parse_response(@client.partial_chunked_upload(last_chunk, @upload_id, @offset))
+                    last_chunk = nil
+                rescue DropboxError => e
+                    resp = JSON.parse(e.http_response.body)
+                    raise unless resp.has_key? 'offset'
+                end
+
+                if resp.has_key? 'offset' and resp['offset'] > @offset
+                    @offset += (resp['offset'] - @offset) if resp['offset']
+                    last_chunk = nil
+                end
+                @upload_id = resp['upload_id'] if resp['upload_id']
+            end
+        end
+
+        # Completes a file upload
+        #
+        # Args:
+        # * to_path: The directory path to upload the file to. If the destination
+        #   directory does not yet exist, it will be created.
+        # * overwrite: Whether to overwrite an existing file at the given path. [default is False]
+        #   If overwrite is False and a file already exists there, Dropbox
+        #   will rename the upload to make sure it doesn't overwrite anything.
+        #   You must check the returned metadata to know what this new name is.
+        #   This field should only be True if your intent is to potentially
+        #   clobber changes to a file that you don't know about.
+        # * parent_rev: The rev field from the 'parent' of this upload.
+        #   If your intent is to update the file at the given path, you should
+        #   pass the parent_rev parameter set to the rev value from the most recent
+        #   metadata you have of the existing file at that path. If the server
+        #   has a more recent version of the file at the specified path, it will
+        #   automatically rename your uploaded file, spinning off a conflict.
+        #   Using this parameter effectively causes the overwrite parameter to be ignored.
+        #   The file will always be overwritten if you send the most-recent parent_rev,
+        #   and it will never be overwritten you send a less-recent one.
+        #
+        # Returns:
+        # *  A Hash with the metadata of file just uploaded.
+        #    For a detailed description of what this call returns, visit:
+        #    https://www.dropbox.com/developers/reference/api#metadata
+        def finish(to_path, overwrite=false, parent_rev=nil)
+            response = @client.commit_chunked_upload(to_path, @upload_id, overwrite, parent_rev)
+            @client.parse_response(response)
+        end
+    end
+
+    def commit_chunked_upload(to_path, upload_id, overwrite=false, parent_rev=nil)  #:nodoc
+        params = {'overwrite' => overwrite.to_s,
+                  'upload_id' => upload_id,
+                  'parent_rev' => parent_rev.to_s,
+                }
+        @session.do_post(build_url("/commit_chunked_upload/#{@root}#{format_path(to_path)}", params, content_server=true))
+    end
+
+    def partial_chunked_upload(data, upload_id=nil, offset=nil)  #:nodoc
+        params = {}
+        params['upload_id'] = upload_id.to_s if upload_id
+        params['offset'] = offset.to_s if offset
+        @session.do_put(build_url('/chunked_upload', params, content_server=true),
+                                {'Content-Type' => "application/octet-stream"},
+                                data)
     end
 
     # Download a file
@@ -419,9 +510,9 @@ class DropboxClient
     #
     # Returns:
     # * The file contents.
-    def get_file(from_path, rev=nil, output_file_path=nil)
-        response = get_file_impl(from_path, rev, output_file_path)
-        parse_response(response, raw=true) if output_file_path
+    def get_file(from_path, rev=nil)
+        response = get_file_impl(from_path, rev)
+        parse_response(response, raw=true)
     end
 
     # Download a file and get its metadata.
@@ -448,12 +539,12 @@ class DropboxClient
     #
     # Returns:
     # * The HTTPResponse for the file download request.
-    def get_file_impl(from_path, rev=nil, output_file_path=nil) # :nodoc:
+    def get_file_impl(from_path, rev=nil) # :nodoc:
         params = {}
         params['rev'] = rev.to_s if rev
 
         path = "/files/#{@root}#{format_path(from_path)}"
-        @session.do_get(build_url(path, params, content_server=true), nil, output_file_path)
+        @session.do_get build_url(path, params, content_server=true)
     end
     private :get_file_impl
 
@@ -707,9 +798,9 @@ class DropboxClient
     # Arguments:
     # * from_path: The path to the file to be thumbnailed.
     # * size: A string describing the desired thumbnail size. At this time,
-    #   'small', 'medium', and 'large' are officially supported sizes
-    #   (32x32, 64x64, and 128x128 respectively), though others may
-    #   be available. Check https://www.dropbox.com/developers/reference/api#thumbnails
+    #   'small' (32x32), 'medium' (64x64), 'large' (128x128), 's' (64x64),
+    #   'm' (128x128), 'l' (640x640), and 'xl' (1024x1024) are officially supported sizes.
+    #   Check https://www.dropbox.com/developers/reference/api#thumbnails
     #   for more details. [defaults to large]
     # Returns:
     # * The thumbnail data
@@ -718,7 +809,7 @@ class DropboxClient
         parse_response(response, raw=true)
     end
 
-    # Download a thumbnail for an image alongwith the image's metadata.
+    # Download a thumbnail for an image along with the image's metadata.
     #
     # Arguments:
     # * from_path: The path to the file to be thumbnailed.
@@ -800,8 +891,6 @@ class DropboxClient
     def thumbnail_impl(from_path, size='large') # :nodoc:
         from_path = format_path(from_path, false)
 
-        raise DropboxError.new("size must be small medium or large. (not '#{size})") unless ['small','medium','large'].include?(size)
-
         params = {
             "size" => size
         }
@@ -843,7 +932,7 @@ class DropboxClient
         path = "/fileops/copy"
 
         params = {'from_copy_ref' => copy_ref,
-                  'to_path' => "#{format_path(to_path)}",
+                  'to_path' => "#{to_path}",
                   'root' => @root}
 
         response = @session.do_post(build_url(path, params))
@@ -869,7 +958,7 @@ class DropboxClient
                 CGI.escape(k) + "=" + CGI.escape(v)
             }.join("&")
         end
-        
+
         target.to_s
     end
 
