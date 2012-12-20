@@ -944,7 +944,7 @@ class DropboxClient
     def build_url(url, params=nil, content_server=false) # :nodoc:
         port = 443
         host = content_server ? Dropbox::API_CONTENT_SERVER : Dropbox::API_SERVER
-        versioned_url = "/#{Dropbox::API_VERSION}#{url}"
+        versioned_url = "/#{Dropbox::API_VERSION}#{CGI.escape(url)}"
 
         target = URI::Generic.new("https", nil, host, port, nil, versioned_url, nil, nil, nil)
 
