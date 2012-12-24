@@ -390,7 +390,7 @@ class DropboxClient
 
         params = {
             'overwrite' => overwrite.to_s,
-            'mute'      => "1"
+            'mute' => '1'
         }
 
         params['parent_rev'] = parent_rev unless parent_rev.nil?
@@ -624,6 +624,7 @@ class DropboxClient
         params = {
             "root" => @root,
             "path" => format_path(path, false),
+            'mute' => '1'
         }
         response = @session.do_post build_url("/fileops/delete", params)
         parse_response(response)
@@ -890,7 +891,7 @@ class DropboxClient
     # Returns:
     # * The HTTPResponse for the thumbnail request.
     def thumbnail_impl(from_path, size='large') # :nodoc:
-        from_path = format_path(from_path, false)
+        from_path = format_path(from_path, true)
 
         params = {
             "size" => size
