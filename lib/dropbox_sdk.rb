@@ -624,6 +624,7 @@ class DropboxClient
         params = {
             "root" => @root,
             "path" => format_path(path, false),
+            "mute" => "1"
         }
         response = @session.do_post build_url("/fileops/delete", params)
         parse_response(response)
