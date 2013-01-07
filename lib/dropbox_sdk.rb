@@ -623,8 +623,7 @@ class DropboxClient
     def file_delete(path)
         params = {
             "root" => @root,
-            "path" => format_path(path, false),
-            "mute" => "1"
+            "path" => format_path(path, false)
         }
         response = @session.do_post build_url("/fileops/delete", params)
         parse_response(response)
